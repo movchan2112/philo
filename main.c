@@ -169,6 +169,15 @@ void	init_forks(t_p **p, int size)
 	p[size - 1]->left_p = p[0];
 }
 
+static void	lock_forks(t_p *p)
+{
+	// if (p->id % 2 == 0)
+	// 	usleep(100);
+	pthread_mutex_lock(&p->fork);
+	ft_pr(timestamp(), p->id, "has taken a fork", p->state);
+	pthread_mutex_lock(&p->left_p->fork);
+	ft_pr(timestamp(), p->id, "has taken a fork", p->state);
+}
 
 // void take_forks_eat(t_p *philosopher) {
 // 	if(philosopher->left_p == NULL)
@@ -180,7 +189,7 @@ void	init_forks(t_p **p, int size)
 // 	}
 // 	else if (philosopher->id % 2 == 0)
 // 	{
-// 		ft_usleep(1);
+// 		ft_usleep(10);
 // 		pthread_mutex_lock(&philosopher->left_p->fork);
 // 		ft_pr(timestamp(), philosopher->id, "has taken a fork neib fork",philosopher->state);
 // 		pthread_mutex_lock(&philosopher->fork);
@@ -201,15 +210,6 @@ void	init_forks(t_p **p, int size)
 // 	pthread_mutex_unlock(&philosopher->left_p->fork);
 // }
 
-static void	lock_forks(t_p *p)
-{
-	if (p->id % 2 == 0)
-		usleep(1000);
-	pthread_mutex_lock(&p->fork);
-	ft_pr(timestamp(), p->id, "has taken a fork", p->state);
-	pthread_mutex_lock(&p->left_p->fork);
-	ft_pr(timestamp(), p->id, "has taken a fork", p->state);
-}
 
 static void	unlock_forks(t_p *p)
 {
@@ -217,28 +217,30 @@ static void	unlock_forks(t_p *p)
 	pthread_mutex_unlock(&p->left_p->fork);
 }
 
-void	take_forks_eat(t_p *p)
-{
-	if (!p->left_p)
-	{
-		pthread_mutex_lock(&p->fork);
-		ft_pr(timestamp(), p->id, "has taken a fork", p->state);
-		ft_usleep(p->stats->time_to_die * 2);
-		pthread_mutex_unlock(&p->fork);
-		return ;
-	}
-	lock_forks(p);
-	ft_pr(timestamp(), p->id, "is eating", p->state);
-	ft_eat(p->stats->time_to_eat, p);
-	unlock_forks(p);
-}
 
+void take_forks_eat(t_p *p) {
+    if (!p->left_p) {
+        // Edge case: Only 1 philosopher (can't eat)
+        pthread_mutex_lock(&p->fork);
+        ft_pr(timestamp(), p->id, "has taken a fork", p->state);
+        ft_usleep(p->stats->time_to_die * 2); // Wait until death
+        pthread_mutex_unlock(&p->fork);
+        return;
+    }
+
+    lock_forks(p); // Ordered locking (deadlock-free)
+    ft_pr(timestamp(), p->id, "is eating", p->state);
+    ft_eat(p->stats->time_to_eat, p);
+    unlock_forks(p); // Release in reverse order (optional)
+}
 
 void *life(void *arg) {
 	t_p *philo = (t_p *)arg;
 	t_state *state = philo->state;
 	t_stats *stats = philo->stats;
 
+	if(philo->id % 2 == 0)
+		ft_usleep(100);
 	while (1) {
 		// Проверка на смерть перед началом цикла
 		pthread_mutex_lock(&state->finish_mutex);
@@ -283,7 +285,6 @@ int	meals_checker(t_p **philos)
 	return (0);	
 }
 
-
 void *monitoring(void *arg) {
 	t_p **philos = (t_p **)arg;
 	t_state *state = philos[0]->state;
@@ -305,10 +306,11 @@ void *monitoring(void *arg) {
 				return NULL;
 			}
 		}
-		usleep(1000); // sleep 1ms
+		usleep(1000);
 	}
 	return NULL;
 }
+
 
 t_stats *init_stats(int v, char **c)
 {
@@ -347,28 +349,24 @@ int check_input(int argc, char **argv)
 		return(0);
 	return (1);
 }
-int init_all()
+
+t_state *init_state()
 {
-
-}
-
-int	main(int argc, char **argv)
-{
-	if(!check_input(argc, argv))
-		return 0;
-
-	t_stats *stats = init_stats(argc, argv);
-
-	// 🧠 Общее состояние
 	t_state *state = malloc(sizeof(t_state));
+	if(!state)
+		return NULL;
 	pthread_mutex_init(&state->finish_mutex, NULL);
 	pthread_mutex_init(&state->print_mutex, NULL);
 	state->finish = 0;
 	state->start_time = timestamp();
+	return state;
+}
 
-
-	// 👥 Инициализация философов
+t_p	**init_philo(t_stats *stats, t_state *state)
+{
 	t_p **p = malloc(sizeof(t_p *) * stats->size);
+	if(!p)
+		return(NULL);
 	for (int i = 0; i < stats->size; i++)
 	{
 		p[i] = init(i, stats->time_to_die,stats->time_to_sleep,stats->time_to_eat);
@@ -376,27 +374,18 @@ int	main(int argc, char **argv)
 		p[i]->stats = stats;
 	}
 	init_forks(p, stats->size);
+	return(p);
+}
 
-	// 🚀 Запуск потоков философов
-	pthread_t threads[stats->size];
-	for (int i = 0; i < stats->size; i++)
-		pthread_create(&threads[i], NULL, life, p[i]);
-
-	// 🔍 Запуск мониторинга
-	pthread_t monitor_thread;
-	pthread_create(&monitor_thread, NULL, monitoring, (void *)p);
-
-	// 🕓 Ожидание завершения
-	for (int i = 0; i < stats->size; i++)
-		pthread_join(threads[i], NULL);
-	pthread_join(monitor_thread, NULL);
-
-	// 🧹 Очистка
-	for (int i = 0; i < stats->size; i++)
+void clear_all(t_stats *stats, t_state *state, t_p	**p)
+{
+	int i = 0;
+	while (i < stats->size)
 	{
 		pthread_mutex_destroy(&p[i]->fork);
 		pthread_mutex_destroy(&p[i]->meal_mutex);
 		free(p[i]);
+		i++;
 	}
 
 	free(p);
@@ -404,6 +393,29 @@ int	main(int argc, char **argv)
 	pthread_mutex_destroy(&state->finish_mutex);
 	pthread_mutex_destroy(&state->print_mutex);
 	free(state);
+}
+int	main(int argc, char **argv)
+{
+	if(!check_input(argc, argv))
+		return 0;
+
+	t_stats *stats = init_stats(argc, argv);
+	t_state *state = init_state();
+
+	t_p **p = init_philo(stats,state);
+
+	pthread_t threads[stats->size];
+	for (int i = 0; i < stats->size; i++)
+		pthread_create(&threads[i], NULL, life, p[i]);
+
+	pthread_t monitor_thread;
+	pthread_create(&monitor_thread, NULL, monitoring, (void *)p);
+
+	for (int i = 0; i < stats->size; i++)
+		pthread_join(threads[i], NULL);
+	pthread_join(monitor_thread, NULL);
+
+	clear_all(stats,state,p);
 	return 0;
 }
 
